@@ -22,9 +22,8 @@ Appen settes opp etter instruksen for VPS-en: ny nginx-site, eget underdomene, p
 ### 0. DNS (hos one.com)
 Legg inn en A-post: `handleliste` → `85.190.105.45`. Sjekk at den er aktiv med `dig +short handleliste.isdahl-engineering.no`.
 
-### 1. Kopier filene til serveren (fra din egen maskin)
+### 1. Logg inn på serveren
 ```bash
-scp handleliste.zip administrator@85.190.105.45:~
 ssh administrator@85.190.105.45
 ```
 
@@ -35,19 +34,38 @@ sudo ss -tlnp | grep 3002     # skal ikke gi noe – porten må være ledig
 uname -m                      # forventer x86_64
 ```
 
-### 3. Bruker og mapper
+### 3. Hent koden fra GitHub (deploy key med bare lesetilgang)
+Repoet er privat, så serveren får sin egen nøkkel som **bare** kan lese dette ene repoet. Nøkkelen og kildekoden ligger hos `administrator`. Appbrukeren får bare en kopi av koden og har aldri tilgang til nøkkelen.
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/handleliste_deploy -N "" -C "vps handleliste deploy"
+cat ~/.ssh/handleliste_deploy.pub
+```
+Kopier linja som vises. Gå så til **github.com/omisdahl/handleliste**, velg **Settings**, så **Deploy keys** og **Add deploy key**. Lim inn linja, kall nøkkelen `VPS`, og la *Allow write access* stå **av**.
+
+```bash
+cat >> ~/.ssh/config <<'EOF'
+
+Host github-handleliste
+    HostName github.com
+    User git
+    IdentityFile ~/.ssh/handleliste_deploy
+    IdentitiesOnly yes
+EOF
+chmod 600 ~/.ssh/config
+git clone git@github-handleliste:omisdahl/handleliste.git ~/handleliste-src
+```
+Første gang spør den om du stoler på github.com. Svar `yes`.
+
+### 4. Bruker og mapper
 ```bash
 sudo adduser --system --group --home /opt/handleliste handleliste
-sudo apt-get install -y unzip
-rm -rf /tmp/hl && unzip -q ~/handleliste.zip -d /tmp/hl
 sudo mkdir -p /opt/handleliste/app /opt/handleliste/data
-sudo cp -r /tmp/hl/handleliste/server.js /tmp/hl/handleliste/public /opt/handleliste/app/
-sudo chown -R root:root /opt/handleliste/app
 sudo chown handleliste:handleliste /opt/handleliste/data
 sudo chmod 750 /opt/handleliste/data
 ```
 
-### 4. Egen Node 24 (påvirker ikke test/pilot)
+### 5. Egen Node 24 (påvirker ikke test/pilot)
 ```bash
 cd /tmp
 BASE=https://nodejs.org/dist/latest-v24.x
@@ -59,7 +77,7 @@ sudo tar -xJf $F -C /opt/handleliste/node --strip-components=1
 /opt/handleliste/node/bin/node --version
 ```
 
-### 5. Passord og hemmelig nøkkel
+### 6. Passord og hemmelig nøkkel
 ```bash
 sudo tee /etc/handleliste.env > /dev/null <<EOF
 FAMILY_PASSWORD=BYTT-MEG
@@ -69,24 +87,23 @@ sudo chmod 600 /etc/handleliste.env
 sudo nano /etc/handleliste.env     # sett et langt familiepassord
 ```
 
-### 6. systemd-tjeneste
+### 7. Kode og systemd-tjeneste
 ```bash
-sudo cp /tmp/hl/handleliste/deploy/handleliste.service /etc/systemd/system/
+sudo cp ~/handleliste-src/deploy/handleliste.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now handleliste
-systemctl status handleliste --no-pager
-curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:3002/    # forventer 302 (videre til innlogging)
+sudo systemctl enable handleliste
+~/handleliste-src/deploy/update.sh       # kopierer koden, starter appen og sjekker at den svarer
 ```
 
-### 7. nginx og HTTPS
+### 8. nginx og HTTPS
 ```bash
-sudo cp /tmp/hl/handleliste/deploy/nginx-handleliste /etc/nginx/sites-available/handleliste
+sudo cp ~/handleliste-src/deploy/nginx-handleliste /etc/nginx/sites-available/handleliste
 sudo ln -s /etc/nginx/sites-available/handleliste /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx      # ALDRI reload uten at nginx -t er OK
 sudo certbot --nginx -d handleliste.isdahl-engineering.no
 ```
 
-### 8. Kontroll (fra instruksen)
+### 9. Kontroll (fra instruksen)
 ```bash
 sudo ss -tlnp | grep 3002          # skal vise 127.0.0.1:3002, ikke 0.0.0.0
 sudo ufw status                    # fortsatt bare 22, 80, 443
@@ -95,19 +112,18 @@ free -h
 ```
 Åpne også `https://test.isdahl-engineering.no` og `https://pilot.isdahl-engineering.no` og sjekk at de fortsatt virker.
 
-### 9. På iPhone
+### 10. På iPhone
 Åpne adressen i Safari, trykk Del og så **Legg til på Hjem-skjerm**. Åpne appen fra hjemskjermen og logg inn **der**, fordi iPhone holder innloggingen i Safari og i hjemskjerm-appen adskilt.
 
 ---
 
 ## Vedlikehold
 
-**Oppdatere appen** (etter at du har kopiert ny zip til serveren og pakket den ut i `/tmp/hl`):
+**Oppdatere appen** etter at nye endringer er lastet opp til GitHub:
 ```bash
-sudo cp -r /tmp/hl/handleliste/server.js /tmp/hl/handleliste/public /opt/handleliste/app/
-sudo chown -R root:root /opt/handleliste/app
-sudo systemctl restart handleliste
+~/handleliste-src/deploy/update.sh
 ```
+Skriptet henter fra GitHub, kopierer koden til `/opt/handleliste/app`, oppdaterer systemd-fila hvis den er endret, starter appen på nytt og sjekker at den svarer. Hvis noe feiler, viser det loggen. nginx røres aldri av skriptet.
 
 **Logg:** `journalctl -u handleliste -f`
 
@@ -124,7 +140,8 @@ sudo systemctl disable --now handleliste
 sudo rm /etc/systemd/system/handleliste.service /etc/handleliste.env
 sudo rm /etc/nginx/sites-enabled/handleliste /etc/nginx/sites-available/handleliste
 sudo nginx -t && sudo systemctl reload nginx
-sudo deluser --system handleliste && sudo rm -rf /opt/handleliste
+sudo deluser --system handleliste && sudo rm -rf /opt/handleliste ~/handleliste-src ~/.ssh/handleliste_deploy*
+# Fjern også «Host github-handleliste»-blokka i ~/.ssh/config og deploy key-en på GitHub
 ```
 
 ---
