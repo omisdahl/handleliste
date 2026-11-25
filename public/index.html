@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="no">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#2f7d4f">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Handleliste">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<title>Handleliste</title>
+<style>
+  :root { --green:#2f7d4f; --bg:#f6f5f1; --card:#fff; --text:#1d1d1b; --muted:#8a8a85; --line:#e6e4de; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#151614; --card:#20221f; --text:#ecebe6; --muted:#8d8f88; --line:#30332e; }
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { margin:0; font-family:-apple-system, system-ui, sans-serif; background:var(--bg); color:var(--text);
+         padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom); }
+  header { position:sticky; top:0; background:var(--bg); padding:16px 16px 8px; z-index:2; }
+  h1 { margin:0 0 12px; font-size:28px; display:flex; align-items:center; justify-content:space-between; }
+  .status { width:10px; height:10px; border-radius:50%; background:#c44; transition:background .3s; }
+  .status.on { background:#3c3; }
+  form { display:flex; gap:8px; }
+  input[type=text] { flex:1; font-size:17px; padding:12px 14px; border-radius:12px; border:1px solid var(--line);
+                     background:var(--card); color:var(--text); outline:none; }
+  input[type=text]:focus { border-color:var(--green); }
+  button { font:inherit; border:0; border-radius:12px; cursor:pointer; }
+  .add { background:var(--green); color:#fff; font-size:22px; width:48px; }
+  .store { display:flex; gap:8px; margin-bottom:10px; }
+  select { flex:1; font-size:16px; padding:10px 12px; border-radius:12px; border:1px solid var(--line);
+           background:var(--card); color:var(--text); -webkit-appearance:none; appearance:none; }
+  .store button { background:var(--card); border:1px solid var(--line); color:var(--text); padding:0 12px; font-size:14px; }
+  .hint { font-size:12px; color:var(--muted); margin:-4px 2px 8px; min-height:1em; }
+  li .new { font-size:11px; color:var(--green); border:1px solid var(--green); border-radius:6px; padding:1px 5px; }
+  ul { list-style:none; margin:0; padding:0 16px; }
+  li { display:flex; align-items:center; gap:12px; background:var(--card); border-radius:12px; padding:12px 14px;
+       margin-bottom:6px; border:1px solid var(--line); user-select:none; }
+  li .box { width:24px; height:24px; border-radius:50%; border:2px solid var(--green); flex:none;
+            display:grid; place-items:center; color:#fff; font-size:14px; }
+  li.done .box { background:var(--green); }
+  li.done .t { text-decoration:line-through; color:var(--muted); }
+  li .t { flex:1; font-size:17px; word-break:break-word; }
+  li .by { font-size:12px; color:var(--muted); }
+  li .del { background:none; color:var(--muted); font-size:20px; padding:0 4px; }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); margin:20px 16px 8px;
+       display:flex; justify-content:space-between; align-items:center; }
+  .clear { background:none; color:var(--green); font-size:13px; text-transform:none; letter-spacing:0; }
+  .empty { text-align:center; color:var(--muted); padding:40px 16px; }
+  footer { text-align:center; padding:24px; font-size:13px; color:var(--muted); }
+  footer button { background:none; color:var(--muted); text-decoration:underline; font-size:13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Handleliste <span class="status" id="status" title="Sanntid"></span></h1>
+  <div class="store">
+    <select id="store" aria-label="Butikk"></select>
+    <button id="storeMenu" type="button">Butikker…</button>
+  </div>
+  <p class="hint" id="hint"></p>
+  <form id="form" autocomplete="off">
+    <input type="text" id="input" placeholder="Legg til vare…" list="sugg" enterkeyhint="done">
+    <datalist id="sugg"></datalist>
+    <button class="add" aria-label="Legg til">+</button>
+  </form>
+</header>
+
+<ul id="todo"></ul>
+<h2 id="doneHead" hidden>I kurven <button class="clear" id="clear">Tøm</button></h2>
+<ul id="done"></ul>
+<p class="empty" id="empty" hidden>Lista er tom 🎉</p>
+
+<footer>
+  Du er <b id="me"></b> · <button id="rename">bytt navn</button> · <button id="logout">logg ut</button>
+</footer>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let name = localStorage.getItem('hl_name');
+function askName() {
+  const n = prompt('Hva heter du? (vises på varene du legger til)', name || '');
+  if (n !== null && n.trim()) { name = n.trim(); localStorage.setItem('hl_name', name); }
+  $('me').textContent = name || 'ukjent';
+}
+if (!name) askName(); else $('me').textContent = name;
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...opts });
+  if (r.status === 401) location.href = '/login.html';
+  return r;
+}
+
+let items = [], stores = [], order = {};
+let storeId = Number(localStorage.getItem('hl_store')) || null;
+const keyOf = (t) => t.trim().toLocaleLowerCase('nb');
+
+function renderStores() {
+  const sel = $('store');
+  if (storeId && !stores.some((s) => s.id === storeId)) storeId = null;
+  sel.replaceChildren(new Option('🏠 Ingen butikk (hjemme)', ''),
+    ...stores.map((s) => new Option('🛒 ' + s.name, s.id)));
+  sel.value = storeId || '';
+}
+async function loadOrder() {
+  order = {};
+  if (storeId) { const r = await api(`/api/stores/${storeId}/order`); if (r.ok) order = await r.json(); }
+  render();
+}
+$('store').onchange = () => {
+  storeId = Number($('store').value) || null;
+  storeId ? localStorage.setItem('hl_store', storeId) : localStorage.removeItem('hl_store');
+  loadOrder();
+};
+$('storeMenu').onclick = async () => {
+  const cur = stores.find((s) => s.id === storeId);
+  const a = prompt('Skriv navnet på en ny butikk' + (cur ? `\n(eller skriv SLETT for å fjerne «${cur.name}»)` : ''));
+  if (!a || !a.trim()) return;
+  if (cur && a.trim().toUpperCase() === 'SLETT') {
+    if (confirm(`Slette «${cur.name}» og alt den har lært om rekkefølgen?`))
+      await api(`/api/stores/${cur.id}`, { method: 'DELETE' });
+    return;
+  }
+  const r = await api('/api/stores', { method: 'POST', body: JSON.stringify({ name: a.trim() }) });
+  if (r.ok) { stores = await r.json(); const s = stores.find((x) => x.name === a.trim());
+    if (s) { $('store').value = s.id; $('store').onchange(); } renderStores(); }
+};
+
+function render() {
+  let todo = items.filter((i) => !i.checked);
+  const done = items.filter((i) => i.checked).sort((a, b) => b.checked_at - a.checked_at);
+  if (storeId) {
+    // Kjente varer etter lært plassering, ukjente nederst (de er «nye» i denne butikken)
+    const sc = (i) => order[keyOf(i.text)]?.score ?? 2;
+    todo = todo.sort((a, b) => sc(a) - sc(b) || a.created_at - b.created_at);
+    const known = Object.keys(order).length;
+    $('hint').textContent = known ? `Sortert etter hvordan dere pleier å gå i butikken (${known} varer lært).`
+      : 'Huk av varene i den rekkefølgen du plukker dem, så lærer appen butikken.';
+  } else $('hint').textContent = '';
+  $('todo').replaceChildren(...todo.map(row));
+  $('done').replaceChildren(...done.map(row));
+  $('doneHead').hidden = !done.length;
+  $('empty').hidden = items.length > 0;
+}
+function row(i) {
+  const li = document.createElement('li');
+  if (i.checked) li.className = 'done';
+  li.innerHTML = '<span class="box"></span><span class="t"></span><span class="by"></span><button class="del" aria-label="Slett">×</button>';
+  li.querySelector('.box').textContent = i.checked ? '✓' : '';
+  li.querySelector('.t').textContent = i.text;
+  li.querySelector('.by').textContent = i.added_by;
+  if (storeId && !i.checked && !order[keyOf(i.text)] && Object.keys(order).length) {
+    const n = document.createElement('span'); n.className = 'new'; n.textContent = 'ny her';
+    li.querySelector('.t').after(n);
+  }
+  li.addEventListener('click', (e) => {
+    if (e.target.closest('.del')) api(`/api/items/${i.id}`, { method: 'DELETE' });
+    else { li.classList.toggle('done'); api(`/api/items/${i.id}/toggle`, { method: 'POST', body: JSON.stringify({ storeId }) }); }
+  });
+  return li;
+}
+
+$('form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const text = $('input').value.trim();
+  if (!text) return;
+  $('input').value = '';
+  await api('/api/items', { method: 'POST', body: JSON.stringify({ text, addedBy: name }) });
+  loadSuggestions();
+});
+$('clear').onclick = () => { if (confirm('Fjerne alle varer i kurven?')) api('/api/clear-checked', { method: 'POST' }); };
+$('rename').onclick = askName;
+$('logout').onclick = async () => { await api('/api/logout', { method: 'POST' }); location.href = '/login.html'; };
+
+async function loadSuggestions() {
+  const r = await api('/api/suggestions');
+  if (!r.ok) return;
+  $('sugg').replaceChildren(...(await r.json()).map((t) => Object.assign(document.createElement('option'), { value: t })));
+}
+
+// Sanntid: Server-Sent Events, kobler til på nytt automatisk
+let es;
+function connect() {
+  es?.close();
+  es = new EventSource('/api/events');
+  es.onopen = () => $('status').classList.add('on');
+  es.onmessage = (e) => { items = JSON.parse(e.data); storeId ? loadOrder() : render(); };
+  es.addEventListener('stores', (e) => { stores = JSON.parse(e.data); renderStores(); });
+  es.onerror = () => { $('status').classList.remove('on'); };
+}
+api('/api/stores').then((r) => r.json()).then((s) => { stores = s; renderStores(); loadOrder(); });
+connect();
+loadSuggestions();
+// iOS dreper tilkoblingen når appen går i bakgrunnen – koble til på nytt når den vises igjen
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && es.readyState !== EventSource.OPEN) connect();
+});
+
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');
+</script>
+</body>
+</html>

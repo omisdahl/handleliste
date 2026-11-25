@@ -1,0 +1,31 @@
+# /etc/nginx/sites-available/handleliste
+# Basert på malen i instruksen. Basic auth er bevisst AV: appen har egen innlogging,
+# og basic auth fungerer dårlig i hjemskjerm-apper på iPhone.
+server {
+    listen 80;
+    server_name handleliste.isdahl-engineering.no;
+
+    location / {
+        proxy_pass http://127.0.0.1:3002;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    # Sanntid (Server-Sent Events): ingen buffering, lang timeout
+    location /api/events {
+        proxy_pass http://127.0.0.1:3002;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 1h;
+    }
+}

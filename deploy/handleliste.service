@@ -1,0 +1,33 @@
+[Unit]
+Description=Handleliste (familie-handleliste)
+After=network.target
+
+[Service]
+Type=simple
+User=handleliste
+Group=handleliste
+WorkingDirectory=/opt/handleliste/app
+EnvironmentFile=/etc/handleliste.env
+Environment=NODE_ENV=production HOST=127.0.0.1 PORT=3002 DATA_DIR=/opt/handleliste/data
+# Egen Node-installasjon, så systemets Node (som test/pilot bruker) ikke røres
+ExecStart=/opt/handleliste/node/bin/node --disable-warning=ExperimentalWarning server.js
+Restart=always
+RestartSec=3
+
+# Minnegrense – beskytter test/pilot hvis noe går galt (appen bruker normalt ~50 MB)
+MemoryMax=200M
+
+# Isolasjon: kan ikke lese /home (der piloten ligger), og kan bare skrive til data-mappa
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/handleliste/data
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

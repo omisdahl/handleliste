@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="no">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#2f7d4f">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<title>Logg inn – Handleliste</title>
+<style>
+  body { margin:0; min-height:100vh; display:grid; place-items:center; font-family:-apple-system, system-ui, sans-serif;
+         background:#f6f5f1; color:#1d1d1b; }
+  @media (prefers-color-scheme: dark) { body { background:#151614; color:#ecebe6; } input { background:#20221f; color:#ecebe6; } }
+  form { width:min(320px, 90vw); display:flex; flex-direction:column; gap:12px; text-align:center; }
+  img { width:72px; margin:0 auto; border-radius:16px; }
+  input, button { font-size:17px; padding:12px 14px; border-radius:12px; border:1px solid #ccc; }
+  button { background:#2f7d4f; color:#fff; border:0; }
+  .err { color:#c44; min-height:1.2em; margin:0; }
+</style>
+</head>
+<body>
+<form id="f">
+  <img src="/icon-192.png" alt="">
+  <h1>Handleliste</h1>
+  <input type="password" id="pw" placeholder="Familiepassord" autocomplete="current-password" autofocus>
+  <button>Logg inn</button>
+  <p class="err" id="err"></p>
+</form>
+<script>
+document.getElementById('f').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const r = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password: document.getElementById('pw').value }) });
+  if (r.ok) location.href = '/';
+  else document.getElementById('err').textContent = (await r.json()).error;
+});
+</script>
+</body>
+</html>
