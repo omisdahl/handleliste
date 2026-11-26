@@ -162,6 +162,13 @@ sudo deluser --system handleliste && sudo rm -rf /opt/handleliste ~/handleliste-
 - Legger du til noe som allerede står på lista, også med en annen stavemåte, får du beskjed, og varen blinker i stedet for å bli lagt til to ganger.
 - Aliasene i katalogen er bare *ekte* synonymer. Lettmelk og helmelk er for eksempel forskjellige varer, så begge kan stå på lista samtidig.
 
+## Kategori og antall
+
+- Hver vare viser kategori under navnet. Trykk på kategorien for å endre den. Valget gjelder alle varer med samme navn og stavemåte, og brukes også når butikkrekkefølgen gjettes.
+- Ukjente varer viser **«＋ kategori»**. Skriver du noe som ikke finnes, kan du velge **«＋ Legg til … som ny vare»** i forslagslista og velge kategori med én gang. Du kan også lage helt nye kategorier.
+- Familiens egne varer og kategorier lagres i tabellen `custom_items` og overstyrer katalogen.
+- **Antall** står i en egen kolonne til høyre og er valgfritt. Trykk for å velge 1–6 eller skrive fritt (*400 g*, *2 pk*). Skriver du *2 melk*, *melk x2* eller *kjøttdeig 400 g*, fylles antallet ut automatisk. Gamle varer med mengde i navnet flyttes over ved oppstart.
+
 ## Sikkerhet
 
 - Appen lytter bare på 127.0.0.1, og ingen nye porter åpnes i ufw.

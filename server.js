@@ -51,6 +51,12 @@ db.exec(`
     at       INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS picks_trip ON picks(trip_id);
+  -- Familiens egne varetyper / kategorivalg (overstyrer katalogen)
+  CREATE TABLE IF NOT EXISTS custom_items (
+    key  TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    cat  TEXT NOT NULL
+  );
   CREATE TABLE IF NOT EXISTS history (
     key  TEXT PRIMARY KEY,
     text TEXT NOT NULL,
@@ -58,9 +64,18 @@ db.exec(`
   );
 `);
 
+// Ny kolonne for antall (legges til i eksisterende databaser)
+if (!db.prepare('PRAGMA table_info(items)').all().some((c) => c.name === 'qty')) {
+  db.exec("ALTER TABLE items ADD COLUMN qty TEXT NOT NULL DEFAULT ''");
+}
+
 const q = {
   all: db.prepare('SELECT * FROM items ORDER BY checked ASC, created_at DESC'),
-  add: db.prepare('INSERT INTO items (text, added_by, created_at) VALUES (?, ?, ?)'),
+  add: db.prepare('INSERT INTO items (text, qty, added_by, created_at) VALUES (?, ?, ?, ?)'),
+  setQty: db.prepare('UPDATE items SET qty = ? WHERE id = ?'),
+  customAll: db.prepare('SELECT key, name, cat FROM custom_items'),
+  setCustom: db.prepare(`INSERT INTO custom_items (key, name, cat) VALUES (?, ?, ?)
+                         ON CONFLICT(key) DO UPDATE SET cat = excluded.cat`),
   toggle: db.prepare('UPDATE items SET checked = 1 - checked, checked_at = ? WHERE id = ?'),
   remove: db.prepare('DELETE FROM items WHERE id = ?'),
   clearChecked: db.prepare('DELETE FROM items WHERE checked = 1'),
@@ -99,9 +114,16 @@ const DECAY = 0.8;              // hvor mye eldre turer teller (1 = like mye, la
 const keyOf = G.keyOf; // "2 mjølk" og "Melk" -> "melk"
 
 // Legg til nøkkel og kategori på varene før de sendes til klientene
+// Kategori: familiens eget valg først, deretter katalogen
+let custom = new Map();
+const loadCustom = () => { custom = new Map(q.customAll.all().map((r) => [r.key, r])); };
+loadCustom();
+const categoryOf = (key) => custom.get(key)?.cat ?? G.categoryOf(key);
+const allCategories = () => [...new Set([...G.CATEGORIES, ...[...custom.values()].map((r) => r.cat)])];
+
 const listItems = () => q.all.all().map((i) => {
   const key = keyOf(i.text);
-  return { ...i, key, cat: G.categoryOf(key) };
+  return { ...i, key, cat: categoryOf(key) };
 });
 // Pen visningstekst for historikk: katalognavnet hvis kjent, ellers teksten uten mengde, med stor forbokstav
 const cap = (s) => s.charAt(0).toLocaleUpperCase('nb') + s.slice(1);
@@ -120,6 +142,11 @@ for (const h of db.prepare('SELECT key, text, n FROM history').all()) {
     db.prepare(`INSERT INTO history (key, text, n) VALUES (?, ?, ?)
                 ON CONFLICT(key) DO UPDATE SET n = n + excluded.n`).run(k, displayName(h.text), h.n);
   }
+}
+// Flytt mengde ut av navnet på gamle varer: "Kjøttdeig 400 g" -> navn "Kjøttdeig", antall "400 g"
+for (const i of db.prepare("SELECT id, text FROM items WHERE qty = ''").all()) {
+  const { name, qty } = G.splitQty(i.text);
+  if (qty) db.prepare('UPDATE items SET text = ?, qty = ? WHERE id = ?').run(cap(name), qty, i.id);
 }
 db.exec('COMMIT');
 
@@ -168,7 +195,7 @@ function storeOrder(storeId) {
   // Kategorisnitt: brukes til å plassere varer som aldri er kjøpt i denne butikken
   const cs = {};
   for (const [k, v] of Object.entries(items)) {
-    const c = G.categoryOf(k);
+    const c = categoryOf(k);
     if (c) (cs[c] ||= []).push(v.score);
   }
   const categories = {};
@@ -277,18 +304,38 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === '/api/items' && req.method === 'GET') return json(res, 200, listItems());
     if (p === '/api/items' && req.method === 'POST') {
-      const { text, addedBy } = await readBody(req);
-      const t = String(text || '').trim().slice(0, 200);
+      const body = await readBody(req);
+      const split = G.splitQty(String(body.text || '').slice(0, 200));
+      const t = split.name;
+      const qty = String(body.qty ?? split.qty ?? '').trim().slice(0, 30);
+      const addedBy = body.addedBy;
       if (!t) return json(res, 400, { error: 'Tom vare' });
       const key = keyOf(t);
       // Står varen (eller en annen stavemåte av den) allerede på lista?
       const dup = listItems().find((i) => !i.checked && i.key === key);
       if (dup) return json(res, 200, { duplicate: dup.id, text: dup.text });
-      q.add.run(cap(t), String(addedBy || '').trim().slice(0, 40), Date.now());
+      q.add.run(cap(t), qty, String(addedBy || '').trim().slice(0, 40), Date.now());
+      // Ny varetype med valgt kategori?
+      if (body.cat && typeof body.cat === 'string') { q.setCustom.run(key, displayName(t), body.cat.trim().slice(0, 40)); loadCustom(); }
       q.remember.run(key, displayName(t));
       broadcast(); return json(res, 201, { ok: true });
     }
     const m = p.match(/^\/api\/items\/(\d+)(\/toggle)?$/);
+    if (m && !m[2] && req.method === 'PATCH') {
+      const { qty } = await readBody(req);
+      q.setQty.run(String(qty ?? '').trim().slice(0, 30), Number(m[1]));
+      broadcast(); return json(res, 200, { ok: true });
+    }
+    if (p === '/api/categories' && req.method === 'GET') return json(res, 200, allCategories());
+    // Sett/endre kategori for en varetype (gjelder alle varer med samme nøkkel)
+    if (p === '/api/categories' && req.method === 'PUT') {
+      const { text, cat } = await readBody(req);
+      const c = String(cat || '').trim().slice(0, 40);
+      const name = String(text || '').trim();
+      if (!c || !name) return json(res, 400, { error: 'Mangler vare eller kategori' });
+      q.setCustom.run(keyOf(name), displayName(name), c); loadCustom();
+      broadcast(); return json(res, 200, allCategories());
+    }
     if (m && m[2] && req.method === 'POST') {
       const { storeId } = await readBody(req);
       const now = Date.now(), id = Number(m[1]);
@@ -308,7 +355,13 @@ const server = http.createServer(async (req, res) => {
     if (sm && !sm[2] && req.method === 'DELETE') { q.delStore.run(Number(sm[1])); broadcastStores(); return json(res, 200, { ok: true }); }
     if (m && !m[2] && req.method === 'DELETE') { q.remove.run(Number(m[1])); broadcast(); return json(res, 200, { ok: true }); }
     if (p === '/api/clear-checked' && req.method === 'POST') { q.clearChecked.run(); broadcast(); return json(res, 200, { ok: true }); }
-    if (p === '/api/suggestions') return json(res, 200, q.suggest.all());
+    if (p === '/api/suggestions') {
+      // Historikk + egne varetyper som ikke er brukt ennå, med kategori
+      const rows = q.suggest.all().map((r) => ({ ...r, cat: categoryOf(r.key) }));
+      const seen = new Set(rows.map((r) => r.key));
+      for (const c of custom.values()) if (!seen.has(c.key)) rows.push({ key: c.key, text: c.name, n: 0, cat: c.cat });
+      return json(res, 200, rows);
+    }
     if (p === '/api/logout' && req.method === 'POST') {
       res.setHeader('Set-Cookie', `${COOKIE}=; Path=/; Max-Age=0`); return json(res, 200, { ok: true });
     }

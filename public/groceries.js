@@ -110,6 +110,18 @@
       .trim() || String(s).trim();
   }
 
+  // Skiller ut mengde: "2 melk" -> { name: "melk", qty: "2" }, "kjøttdeig 400 g" -> { name: "kjøttdeig", qty: "400 g" }
+  function splitQty(s) {
+    s = String(s).trim();
+    const pre = s.match(new RegExp(`^(${NUM})\\s*(${UNIT})?\\s+(.+)$`, 'i'));
+    if (pre) return { name: pre[3].trim(), qty: (pre[2] && !/^x$/i.test(pre[2]) ? `${pre[1]} ${pre[2]}` : pre[1]) };
+    const xpre = s.match(new RegExp(`^x\\s*(${NUM})\\s+(.+)$`, 'i'));
+    if (xpre) return { name: xpre[2].trim(), qty: xpre[1] };
+    const post = s.match(new RegExp(`^(.+?)\\s+(x\\s*)?(${NUM})\\s*(${UNIT})?$`, 'i'));
+    if (post) return { name: post[1].trim(), qty: post[4] && !/^x$/i.test(post[4]) ? `${post[3]} ${post[4]}` : post[3] };
+    return { name: s, qty: '' };
+  }
+
   // ---------- Katalog ----------
   const CATALOG = [];
   const ALIAS = new Map(); // normalisert alias -> katalogoppføring
@@ -178,7 +190,8 @@
     return hits.sort((a, b) => a.s - b.s).slice(0, limit).map((h) => h.e);
   }
 
-  const api = { CATALOG, norm, stripQty, keyOf, lookup, categoryOf, search };
+  const CATEGORIES = Object.keys(RAW);
+  const api = { CATALOG, CATEGORIES, norm, stripQty, splitQty, keyOf, lookup, categoryOf, search };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.Groceries = api;
 })(typeof self !== 'undefined' ? self : this);
