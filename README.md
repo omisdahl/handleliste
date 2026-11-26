@@ -151,8 +151,16 @@ sudo deluser --system handleliste && sudo rm -rf /opt/handleliste ~/handleliste-
 - Velg butikk øverst før du handler. Valget huskes per telefon. Rydder du lista hjemme, velg «Ingen butikk».
 - Avhukinger i samme butikk med under 2 timers mellomrom regnes som én **handletur**. Angrer du en avhuking, fjernes den fra turen.
 - Hver vare får en plassering fra 0 (først) til 1 (sist) på turen. Rekkefølgen er et vektet snitt av de siste 30 turene, og hver tur teller 0,8 ganger så mye som turen etter, så lista tilpasser seg hvis butikken bygges om.
-- Varer appen ikke har sett i butikken før, havner nederst merket **«ny her»**.
+- Varer appen ikke har sett i butikken før, merkes **«ny her»** og plasseres sammen med andre varer i samme kategori. Ny yoghurt havner for eksempel ved melka.
 - Juster `TRIP_GAP` og `DECAY` øverst i `server.js` om du vil.
+
+## Forslag og stavemåter
+
+- `public/groceries.js` inneholder en katalog med rundt 300 vanlige dagligvarer, med kategori og alternative stavemåter (for eksempel *mjølk* → Melk og *doruller* → Toalettpapir). Det er lett å utvide den.
+- Mens du skriver, foreslår appen varer fra katalogen og fra det familien har kjøpt før. Mest brukte kommer først, og skrivefeil tolereres, så *bannaer* blir Bananer og *agruk* blir Agurk.
+- Hver vare får en **nøkkel** der mengde (*2 melk*, *melk x2*, *400 g*), store og små bokstaver og stavemåte er fjernet. Butikkrekkefølge, historikk og duplikatsjekk bruker denne nøkkelen.
+- Legger du til noe som allerede står på lista, også med en annen stavemåte, får du beskjed, og varen blinker i stedet for å bli lagt til to ganger.
+- Aliasene i katalogen er bare *ekte* synonymer. Lettmelk og helmelk er for eksempel forskjellige varer, så begge kan stå på lista samtidig.
 
 ## Sikkerhet
 

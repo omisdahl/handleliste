@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
+const G = require('./public/groceries.js'); // varekatalog + normalisering av stavemåter
 
 const PORT = Number(process.env.PORT || 3002);
 const HOST = process.env.HOST || '127.0.0.1'; // kun lokalt – nginx står foran
@@ -66,7 +67,7 @@ const q = {
   // Hent tidligere varer som forslag (mest brukte først)
   remember: db.prepare(`INSERT INTO history (key, text) VALUES (?, ?)
                         ON CONFLICT(key) DO UPDATE SET n = n + 1, text = excluded.text`),
-  suggest: db.prepare('SELECT text FROM history ORDER BY n DESC LIMIT 100'),
+  suggest: db.prepare('SELECT key, text, n FROM history ORDER BY n DESC LIMIT 300'),
   get: db.prepare('SELECT * FROM items WHERE id = ?'),
 
   stores: db.prepare('SELECT id, name FROM stores ORDER BY name'),
@@ -95,7 +96,32 @@ const q = {
 // ---------- Læring av rekkefølge per butikk ----------
 const TRIP_GAP = 2 * 60 * 60e3; // 2 timer pause = ny handletur
 const DECAY = 0.8;              // hvor mye eldre turer teller (1 = like mye, lavere = glemmer raskere)
-const keyOf = (text) => text.trim().toLocaleLowerCase('nb');
+const keyOf = G.keyOf; // "2 mjølk" og "Melk" -> "melk"
+
+// Legg til nøkkel og kategori på varene før de sendes til klientene
+const listItems = () => q.all.all().map((i) => {
+  const key = keyOf(i.text);
+  return { ...i, key, cat: G.categoryOf(key) };
+});
+// Pen visningstekst for historikk: katalognavnet hvis kjent, ellers teksten uten mengde, med stor forbokstav
+const cap = (s) => s.charAt(0).toLocaleUpperCase('nb') + s.slice(1);
+const displayName = (t) => G.lookup(t)?.name ?? cap(G.stripQty(t));
+
+// Engangs-migrering: gamle nøkler (før stavemåte-normalisering) -> kanoniske nøkler
+db.exec('BEGIN');
+for (const { item_key } of db.prepare('SELECT DISTINCT item_key FROM picks').all()) {
+  const k = keyOf(item_key);
+  if (k !== item_key) db.prepare('UPDATE picks SET item_key = ? WHERE item_key = ?').run(k, item_key);
+}
+for (const h of db.prepare('SELECT key, text, n FROM history').all()) {
+  const k = keyOf(h.text);
+  if (k !== h.key) {
+    db.prepare('DELETE FROM history WHERE key = ?').run(h.key);
+    db.prepare(`INSERT INTO history (key, text, n) VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET n = n + excluded.n`).run(k, displayName(h.text), h.n);
+  }
+}
+db.exec('COMMIT');
 
 // Finn (eller start) pågående tur i butikken
 function currentTrip(storeId, now) {
@@ -137,9 +163,17 @@ function storeOrder(storeId) {
       acc[k].sum += pos * w; acc[k].w += w; acc[k].n++;
     });
   }
-  const out = {};
-  for (const [k, a] of Object.entries(acc)) out[k] = { score: a.sum / a.w, seen: a.n };
-  return out;
+  const items = {};
+  for (const [k, a] of Object.entries(acc)) items[k] = { score: a.sum / a.w, seen: a.n };
+  // Kategorisnitt: brukes til å plassere varer som aldri er kjøpt i denne butikken
+  const cs = {};
+  for (const [k, v] of Object.entries(items)) {
+    const c = G.categoryOf(k);
+    if (c) (cs[c] ||= []).push(v.score);
+  }
+  const categories = {};
+  for (const [c, arr] of Object.entries(cs)) categories[c] = arr.reduce((x, y) => x + y, 0) / arr.length;
+  return { items, categories };
 }
 
 // ---------- Innlogging: signert cookie ----------
@@ -171,7 +205,7 @@ function tooMany(ip) {
 // ---------- Sanntid via Server-Sent Events ----------
 const clients = new Set();
 function broadcast() {
-  const msg = `data: ${JSON.stringify(q.all.all())}\n\n`;
+  const msg = `data: ${JSON.stringify(listItems())}\n\n`;
   for (const res of clients) res.write(msg);
 }
 function broadcastStores() {
@@ -236,18 +270,22 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/events') {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache',
         Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
-      res.write(`data: ${JSON.stringify(q.all.all())}\n\n`);
+      res.write(`data: ${JSON.stringify(listItems())}\n\n`);
       clients.add(res);
       req.on('close', () => clients.delete(res));
       return;
     }
-    if (p === '/api/items' && req.method === 'GET') return json(res, 200, q.all.all());
+    if (p === '/api/items' && req.method === 'GET') return json(res, 200, listItems());
     if (p === '/api/items' && req.method === 'POST') {
       const { text, addedBy } = await readBody(req);
       const t = String(text || '').trim().slice(0, 200);
       if (!t) return json(res, 400, { error: 'Tom vare' });
-      q.add.run(t, String(addedBy || '').trim().slice(0, 40), Date.now());
-      q.remember.run(keyOf(t), t);
+      const key = keyOf(t);
+      // Står varen (eller en annen stavemåte av den) allerede på lista?
+      const dup = listItems().find((i) => !i.checked && i.key === key);
+      if (dup) return json(res, 200, { duplicate: dup.id, text: dup.text });
+      q.add.run(cap(t), String(addedBy || '').trim().slice(0, 40), Date.now());
+      q.remember.run(key, displayName(t));
       broadcast(); return json(res, 201, { ok: true });
     }
     const m = p.match(/^\/api\/items\/(\d+)(\/toggle)?$/);
@@ -270,7 +308,7 @@ const server = http.createServer(async (req, res) => {
     if (sm && !sm[2] && req.method === 'DELETE') { q.delStore.run(Number(sm[1])); broadcastStores(); return json(res, 200, { ok: true }); }
     if (m && !m[2] && req.method === 'DELETE') { q.remove.run(Number(m[1])); broadcast(); return json(res, 200, { ok: true }); }
     if (p === '/api/clear-checked' && req.method === 'POST') { q.clearChecked.run(); broadcast(); return json(res, 200, { ok: true }); }
-    if (p === '/api/suggestions') return json(res, 200, q.suggest.all().map((r) => r.text));
+    if (p === '/api/suggestions') return json(res, 200, q.suggest.all());
     if (p === '/api/logout' && req.method === 'POST') {
       res.setHeader('Set-Cookie', `${COOKIE}=; Path=/; Max-Age=0`); return json(res, 200, { ok: true });
     }

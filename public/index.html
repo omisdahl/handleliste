@@ -15,6 +15,7 @@
   @media (prefers-color-scheme: dark) {
     :root { --bg:#151614; --card:#20221f; --text:#ecebe6; --muted:#8d8f88; --line:#30332e; }
   }
+  [hidden] { display:none !important; }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   body { margin:0; font-family:-apple-system, system-ui, sans-serif; background:var(--bg); color:var(--text);
          padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom); }
@@ -34,6 +35,19 @@
   .store button { background:var(--card); border:1px solid var(--line); color:var(--text); padding:0 12px; font-size:14px; }
   .hint { font-size:12px; color:var(--muted); margin:-4px 2px 8px; min-height:1em; }
   li .new { font-size:11px; color:var(--green); border:1px solid var(--green); border-radius:6px; padding:1px 5px; }
+  .wrap { position:relative; flex:1; display:flex; }
+  .sugg { position:absolute; top:calc(100% + 4px); left:0; right:0; margin:0; padding:4px; z-index:5;
+          background:var(--card); border:1px solid var(--line); border-radius:12px; box-shadow:0 8px 24px rgba(0,0,0,.15); }
+  .sugg li { border:0; margin:0; padding:11px 12px; border-radius:8px; cursor:pointer; }
+  .sugg li.sel, .sugg li:active { background:var(--bg); }
+  .sugg .cat { font-size:12px; color:var(--muted); }
+  .sugg .on { font-size:12px; color:var(--green); }
+  li.flash { animation:flash 1.2s; }
+  @keyframes flash { 0%,60% { background:#ffe58a; } }
+  .toast { position:fixed; left:50%; bottom:calc(24px + env(safe-area-inset-bottom)); transform:translateX(-50%);
+           background:#1d1d1b; color:#fff; padding:10px 16px; border-radius:20px; font-size:15px; z-index:9;
+           opacity:0; transition:opacity .2s; pointer-events:none; max-width:90vw; text-align:center; }
+  .toast.show { opacity:1; }
   ul { list-style:none; margin:0; padding:0 16px; }
   li { display:flex; align-items:center; gap:12px; background:var(--card); border-radius:12px; padding:12px 14px;
        margin-bottom:6px; border:1px solid var(--line); user-select:none; }
@@ -61,8 +75,11 @@
   </div>
   <p class="hint" id="hint"></p>
   <form id="form" autocomplete="off">
-    <input type="text" id="input" placeholder="Legg til vare…" list="sugg" enterkeyhint="done">
-    <datalist id="sugg"></datalist>
+    <div class="wrap">
+      <input type="text" id="input" placeholder="Legg til vare…" enterkeyhint="done"
+             autocapitalize="sentences" autocorrect="off" spellcheck="false">
+      <ul class="sugg" id="sugg" hidden></ul>
+    </div>
     <button class="add" aria-label="Legg til">+</button>
   </form>
 </header>
@@ -70,12 +87,14 @@
 <ul id="todo"></ul>
 <h2 id="doneHead" hidden>I kurven <button class="clear" id="clear">Tøm</button></h2>
 <ul id="done"></ul>
+<div class="toast" id="toast"></div>
 <p class="empty" id="empty" hidden>Lista er tom 🎉</p>
 
 <footer>
   Du er <b id="me"></b> · <button id="rename">bytt navn</button> · <button id="logout">logg ut</button>
 </footer>
 
+<script src="/groceries.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 let name = localStorage.getItem('hl_name');
@@ -92,9 +111,8 @@ async function api(path, opts = {}) {
   return r;
 }
 
-let items = [], stores = [], order = {};
+let items = [], stores = [], order = { items: {}, categories: {} };
 let storeId = Number(localStorage.getItem('hl_store')) || null;
-const keyOf = (t) => t.trim().toLocaleLowerCase('nb');
 
 function renderStores() {
   const sel = $('store');
@@ -104,7 +122,7 @@ function renderStores() {
   sel.value = storeId || '';
 }
 async function loadOrder() {
-  order = {};
+  order = { items: {}, categories: {} };
   if (storeId) { const r = await api(`/api/stores/${storeId}/order`); if (r.ok) order = await r.json(); }
   render();
 }
@@ -131,10 +149,11 @@ function render() {
   let todo = items.filter((i) => !i.checked);
   const done = items.filter((i) => i.checked).sort((a, b) => b.checked_at - a.checked_at);
   if (storeId) {
-    // Kjente varer etter lært plassering, ukjente nederst (de er «nye» i denne butikken)
-    const sc = (i) => order[keyOf(i.text)]?.score ?? 2;
+    // Kjente varer etter lært plassering. Nye varer plasseres ved andre varer i samme kategori,
+    // og helt ukjente havner nederst.
+    const sc = (i) => order.items[i.key]?.score ?? (order.categories[i.cat] ?? 1.5) + 0.001;
     todo = todo.sort((a, b) => sc(a) - sc(b) || a.created_at - b.created_at);
-    const known = Object.keys(order).length;
+    const known = Object.keys(order.items).length;
     $('hint').textContent = known ? `Sortert etter hvordan dere pleier å gå i butikken (${known} varer lært).`
       : 'Huk av varene i den rekkefølgen du plukker dem, så lærer appen butikken.';
   } else $('hint').textContent = '';
@@ -150,7 +169,8 @@ function row(i) {
   li.querySelector('.box').textContent = i.checked ? '✓' : '';
   li.querySelector('.t').textContent = i.text;
   li.querySelector('.by').textContent = i.added_by;
-  if (storeId && !i.checked && !order[keyOf(i.text)] && Object.keys(order).length) {
+  li.dataset.id = i.id;
+  if (storeId && !i.checked && !order.items[i.key] && Object.keys(order.items).length) {
     const n = document.createElement('span'); n.className = 'new'; n.textContent = 'ny her';
     li.querySelector('.t').after(n);
   }
@@ -161,23 +181,79 @@ function row(i) {
   return li;
 }
 
-$('form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const text = $('input').value.trim();
+async function addText(text) {
+  text = text.trim();
   if (!text) return;
-  $('input').value = '';
-  await api('/api/items', { method: 'POST', body: JSON.stringify({ text, addedBy: name }) });
+  $('input').value = ''; hideSugg();
+  const r = await api('/api/items', { method: 'POST', body: JSON.stringify({ text, addedBy: name }) });
+  const res = await r.json().catch(() => ({}));
+  if (res.duplicate) {
+    toast(`«${res.text}» står allerede på lista`);
+    const li = document.querySelector(`li[data-id="${res.duplicate}"]`);
+    if (li) { li.scrollIntoView({ block: 'center', behavior: 'smooth' }); li.classList.remove('flash'); void li.offsetWidth; li.classList.add('flash'); }
+  }
   loadSuggestions();
+}
+$('form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const hit = sel >= 0 ? shown[sel] : null;
+  addText(hit ? hit.name : $('input').value);
+  $('input').focus();
+});
+let tt;
+function toast(msg) {
+  $('toast').textContent = msg; $('toast').classList.add('show');
+  clearTimeout(tt); tt = setTimeout(() => $('toast').classList.remove('show'), 2500);
+}
+
+// ---------- Forslag: katalog + familiens egne varer, tåler skrivefeil ----------
+let entries = Groceries.CATALOG.map((e) => ({ ...e, n: 0 }));
+let shown = [], sel = -1;
+async function loadSuggestions() {
+  const r = await api('/api/suggestions');
+  if (!r.ok) return;
+  const hist = await r.json();
+  const byKey = new Map(Groceries.CATALOG.map((e) => [e.key, { ...e, n: 0 }]));
+  for (const h of hist) {
+    if (byKey.has(h.key)) byKey.get(h.key).n = h.n;
+    else byKey.set(h.key, { name: h.text, cat: null, key: h.key, terms: [Groceries.norm(h.text)], n: h.n });
+  }
+  entries = [...byKey.values()];
+}
+function hideSugg() { $('sugg').hidden = true; shown = []; sel = -1; }
+function showSugg() {
+  const q = $('input').value;
+  shown = Groceries.search(q, entries, 6);
+  sel = -1;
+  if (!shown.length) return hideSugg();
+  const onList = new Set(items.filter((i) => !i.checked).map((i) => i.key));
+  $('sugg').replaceChildren(...shown.map((e, idx) => {
+    const li = document.createElement('li');
+    const t = document.createElement('span'); t.className = 't'; t.textContent = e.name;
+    const c = document.createElement('span');
+    if (onList.has(e.key)) { c.className = 'on'; c.textContent = '✓ på lista'; }
+    else { c.className = 'cat'; c.textContent = e.cat || (e.n ? 'brukt før' : ''); }
+    li.append(t, c);
+    // pointerdown (ikke click), så tastaturet ikke lukkes før vi rekker å legge til
+    li.addEventListener('pointerdown', (ev) => { ev.preventDefault(); addText(e.name); });
+    return li;
+  }));
+  $('sugg').hidden = false;
+}
+$('input').addEventListener('input', showSugg);
+$('input').addEventListener('blur', () => setTimeout(hideSugg, 150));
+$('input').addEventListener('keydown', (e) => {
+  if (!shown.length || !['ArrowDown', 'ArrowUp', 'Escape'].includes(e.key)) return;
+  e.preventDefault();
+  if (e.key === 'Escape') return hideSugg();
+  if (e.key === 'ArrowDown') sel = sel + 1 >= shown.length ? -1 : sel + 1;
+  else sel = sel - 1 < -1 ? shown.length - 1 : sel - 1;
+  [...$('sugg').children].forEach((li, i) => li.classList.toggle('sel', i === sel));
 });
 $('clear').onclick = () => { if (confirm('Fjerne alle varer i kurven?')) api('/api/clear-checked', { method: 'POST' }); };
 $('rename').onclick = askName;
 $('logout').onclick = async () => { await api('/api/logout', { method: 'POST' }); location.href = '/login.html'; };
 
-async function loadSuggestions() {
-  const r = await api('/api/suggestions');
-  if (!r.ok) return;
-  $('sugg').replaceChildren(...(await r.json()).map((t) => Object.assign(document.createElement('option'), { value: t })));
-}
 
 // Sanntid: Server-Sent Events, kobler til på nytt automatisk
 let es;
